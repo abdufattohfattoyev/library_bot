@@ -130,3 +130,12 @@ dmypy.json
 .idea/*
 .idea
 .env
+
+# SQLite databases
+*.db
+*.sqlite3
+
+# Backup va boshqa db fayllar
+*.db-journal
+*.sqlite
+*.sqlite3-journal
