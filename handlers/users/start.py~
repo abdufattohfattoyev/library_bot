@@ -86,14 +86,7 @@ def create_subscription_keyboard():
 
 async def send_subscription_message(message_or_query, is_callback=False):
     """Obuna xabarini yuborish"""
-    text = """🔒 <b>Majburiy obuna!</b>
-
-Botdan foydalanish uchun quyidagi kanal va guruhga obuna bo'ling:
-
-🔗 <b>Guruh:</b> https://t.me/+gLy1cprxw1gwNDVi
-🔗 <b>Kanal:</b> @jurnal_universal
-
-Obuna bo'lgandan keyin "✅ Obunani tekshirish" tugmasini bosing."""
+    text = """Botdan foydalanish uchun pasdagi kanal va gruppaga a'zo bo'ling"""
 
     keyboard = create_subscription_keyboard()
 
