@@ -1,0 +1,575 @@
+import sqlite3
+import logging
+from typing import List, Dict, Optional, Tuple
+import os
+import json
+import time
+from functools import lru_cache
+import threading
+
+DB_NAME = 'bot_database.db'
+
+# Simple in-memory cache
+_cache = {}
+_cache_lock = threading.Lock()
+CACHE_TTL = 300  # 5 minut
+
+
+class SimpleCache:
+    """Oddiy in-memory cache"""
+
+    @staticmethod
+    def get(key: str):
+        with _cache_lock:
+            if key in _cache:
+                data, timestamp = _cache[key]
+                if time.time() - timestamp < CACHE_TTL:
+                    return data
+                else:
+                    del _cache[key]
+            return None
+
+    @staticmethod
+    def set(key: str, value):
+        with _cache_lock:
+            _cache[key] = (value, time.time())
+
+    @staticmethod
+    def clear():
+        with _cache_lock:
+            _cache.clear()
+
+    @staticmethod
+    def delete(pattern: str):
+        """Pattern bo'yicha cache tozalash"""
+        with _cache_lock:
+            keys_to_delete = [k for k in _cache.keys() if pattern in k]
+            for key in keys_to_delete:
+                del _cache[key]
+
+
+def init_journals_db():
+    """Jurnallar uchun optimizatsiya qilingan ma'lumotlar bazasini yaratish"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    # Jadvallarni yaratish
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS fanlar (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nomi TEXT UNIQUE NOT NULL
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bolimlar (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nomi TEXT UNIQUE NOT NULL
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS jurnallar (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fan_id INTEGER NOT NULL,
+            bolim_id INTEGER NOT NULL,
+            nomi TEXT NOT NULL,
+            rasmi TEXT,
+            nashr_chastotasi TEXT,
+            murojaat_link TEXT,
+            jurnal_sayti TEXT,
+            talablar_link TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (fan_id) REFERENCES fanlar (id),
+            FOREIGN KEY (bolim_id) REFERENCES bolimlar (id)
+        )
+    ''')
+
+    # PERFORMANCE: Keng qamrovli indexlar
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_jurnallar_fan_id ON jurnallar(fan_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_jurnallar_bolim_id ON jurnallar(bolim_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_jurnallar_fan_bolim ON jurnallar(fan_id, bolim_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_jurnallar_nomi ON jurnallar(nomi)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_jurnallar_nomi_lowercase ON jurnallar(LOWER(nomi))')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_jurnallar_created_at ON jurnallar(created_at DESC)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_fanlar_nomi ON fanlar(nomi)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_bolimlar_nomi ON bolimlar(nomi)')
+
+    # PERFORMANCE: SQLite optimallashtirish
+    cursor.execute('PRAGMA journal_mode = WAL')  # Write-Ahead Logging
+    cursor.execute('PRAGMA synchronous = NORMAL')  # Tezroq yozish
+    cursor.execute('PRAGMA cache_size = -64000')  # 64MB cache
+    cursor.execute('PRAGMA temp_store = MEMORY')  # Vaqtinchalik jadvallar xotirda
+    cursor.execute('PRAGMA mmap_size = 134217728')  # 128MB memory mapping
+
+    conn.commit()
+    populate_initial_data(cursor, conn)
+    conn.close()
+    logging.info("Optimizatsiya qilingan jurnallar bazasi yaratildi")
+
+
+def populate_initial_data(cursor, conn):
+    """Dastlabki fanlar va bo'limlarni yuklash"""
+    fanlar = [
+        "Fizika-matematika fanlari", "Kimyo fanlari", "Biologiya fanlari",
+        "Geologiya-mineralogiya fanlari", "Texnika fanlari", "Qishloq xo'jaligi fanlari",
+        "Tarix fanlari", "Iqtisodiyot fanlari", "Falsafa fanlari", "Filologiya fanlari",
+        "Geografiya fanlari", "Yuridik fanlar", "Pedagogika fanlari", "Tibbiyot fanlari",
+        "Farmatsevtika fanlari", "Veterinariya fanlari", "San'atshunoslik fanlari",
+        "Arxitektura", "Psixologiya fanlari", "Harbiy fanlar", "Sotsiologiya fanlari",
+        "Siyosiy fanlar", "Islomshunoslik fanlari"
+    ]
+
+    bolimlar = [
+        "Milliy nashrlar",
+        "Mustaqil davlatlar hamdo'stligi mamlakatlari nashrlari",
+        "Evropa mamlakatlari nashrlari",
+        "Amerika mamlakatlari nashrlari"
+    ]
+
+    for fan_nomi in fanlar:
+        cursor.execute('INSERT OR IGNORE INTO fanlar (nomi) VALUES (?)', (fan_nomi,))
+
+    for bolim_nomi in bolimlar:
+        cursor.execute('INSERT OR IGNORE INTO bolimlar (nomi) VALUES (?)', (bolim_nomi,))
+
+    conn.commit()
+
+
+# PERFORMANCE: Keshlanuvchi fanlar ro'yxati
+@lru_cache(maxsize=1)
+def get_fanlar() -> List[Dict]:
+    """Keshlangan fanlar ro'yxati"""
+    cache_key = "fanlar_list"
+    cached = SimpleCache.get(cache_key)
+    if cached:
+        return cached
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('SELECT id, nomi FROM fanlar ORDER BY nomi')
+        results = cursor.fetchall()
+        conn.close()
+
+        fanlar = [{'id': r[0], 'nomi': r[1]} for r in results]
+        SimpleCache.set(cache_key, fanlar)
+        return fanlar
+    except Exception as e:
+        logging.error(f"Fanlarni olishda xatolik: {str(e)}")
+        return []
+
+
+# PERFORMANCE: Keshlanuvchi bo'limlar ro'yxati
+@lru_cache(maxsize=1)
+def get_bolimlar() -> List[Dict]:
+    """Keshlangan bo'limlar ro'yxati"""
+    cache_key = "bolimlar_list"
+    cached = SimpleCache.get(cache_key)
+    if cached:
+        return cached
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('SELECT id, nomi FROM bolimlar ORDER BY id')
+        results = cursor.fetchall()
+        conn.close()
+
+        bolimlar = [{'id': r[0], 'nomi': r[1]} for r in results]
+        SimpleCache.set(cache_key, bolimlar)
+        return bolimlar
+    except Exception as e:
+        logging.error(f"Bo'limlarni olishda xatolik: {str(e)}")
+        return []
+
+
+def get_fan_by_id(fan_id: int) -> Optional[Dict]:
+    """Keshlangan fan ma'lumoti"""
+    cache_key = f"fan_{fan_id}"
+    cached = SimpleCache.get(cache_key)
+    if cached:
+        return cached
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('SELECT id, nomi FROM fanlar WHERE id = ?', (fan_id,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if result:
+            fan_data = {'id': result[0], 'nomi': result[1]}
+            SimpleCache.set(cache_key, fan_data)
+            return fan_data
+        return None
+    except Exception as e:
+        logging.error(f"Fanni olishda xatolik: {str(e)}")
+        return None
+
+
+def get_bolim_by_id(bolim_id: int) -> Optional[Dict]:
+    """Keshlangan bo'lim ma'lumoti"""
+    cache_key = f"bolim_{bolim_id}"
+    cached = SimpleCache.get(cache_key)
+    if cached:
+        return cached
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('SELECT id, nomi FROM bolimlar WHERE id = ?', (bolim_id,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if result:
+            bolim_data = {'id': result[0], 'nomi': result[1]}
+            SimpleCache.set(cache_key, bolim_data)
+            return bolim_data
+        return None
+    except Exception as e:
+        logging.error(f"Bo'limni olishda xatolik: {str(e)}")
+        return None
+
+
+def get_jurnallar(fan_id: int, bolim_id: int, page: int = 1, per_page: int = 15) -> Tuple[List[Dict], int]:
+    """Optimizatsiya qilingan jurnallar ro'yxati"""
+    cache_key = f"jurnallar_{fan_id}_{bolim_id}_{page}_{per_page}"
+    cached = SimpleCache.get(cache_key)
+    if cached:
+        return cached
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        # Count query (keshlangan)
+        count_cache_key = f"count_{fan_id}_{bolim_id}"
+        total_count = SimpleCache.get(count_cache_key)
+        if total_count is None:
+            cursor.execute('SELECT COUNT(*) FROM jurnallar WHERE fan_id = ? AND bolim_id = ?',
+                           (fan_id, bolim_id))
+            total_count = cursor.fetchone()[0]
+            SimpleCache.set(count_cache_key, total_count)
+
+        # Optimizatsiya qilingan asosiy query
+        offset = (page - 1) * per_page
+        cursor.execute('''
+            SELECT j.id, j.nomi, j.rasmi, j.nashr_chastotasi,
+                   j.murojaat_link, j.jurnal_sayti, j.talablar_link,
+                   f.nomi, b.nomi
+            FROM jurnallar j
+            JOIN fanlar f ON j.fan_id = f.id
+            JOIN bolimlar b ON j.bolim_id = b.id
+            WHERE j.fan_id = ? AND j.bolim_id = ?
+            ORDER BY j.nomi
+            LIMIT ? OFFSET ?
+        ''', (fan_id, bolim_id, per_page, offset))
+
+        results = cursor.fetchall()
+        conn.close()
+
+        jurnallar = []
+        for r in results:
+            jurnallar.append({
+                'id': r[0], 'nomi': r[1], 'rasmi': r[2], 'nashr_chastotasi': r[3],
+                'murojaat_link': r[4], 'jurnal_sayti': r[5], 'talablar_link': r[6],
+                'fan_nomi': r[7], 'bolim_nomi': r[8]
+            })
+
+        result = (jurnallar, total_count)
+        SimpleCache.set(cache_key, result)
+        return result
+    except Exception as e:
+        logging.error(f"Jurnallarni olishda xatolik: {str(e)}")
+        return [], 0
+
+
+def get_jurnal_by_id(jurnal_id: int) -> Optional[Dict]:
+    """Keshlangan jurnal ma'lumoti"""
+    cache_key = f"jurnal_{jurnal_id}"
+    cached = SimpleCache.get(cache_key)
+    if cached:
+        return cached
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT j.id, j.fan_id, j.bolim_id, j.nomi, j.rasmi, 
+                   j.nashr_chastotasi, j.murojaat_link, j.jurnal_sayti, 
+                   j.talablar_link, f.nomi, b.nomi
+            FROM jurnallar j
+            JOIN fanlar f ON j.fan_id = f.id
+            JOIN bolimlar b ON j.bolim_id = b.id
+            WHERE j.id = ?
+        ''', (jurnal_id,))
+
+        result = cursor.fetchone()
+        conn.close()
+
+        if result:
+            jurnal_data = {
+                'id': result[0], 'fan_id': result[1], 'bolim_id': result[2],
+                'nomi': result[3], 'rasmi': result[4], 'nashr_chastotasi': result[5],
+                'murojaat_link': result[6], 'jurnal_sayti': result[7], 'talablar_link': result[8],
+                'fan_nomi': result[9], 'bolim_nomi': result[10]
+            }
+            SimpleCache.set(cache_key, jurnal_data)
+            return jurnal_data
+        return None
+    except Exception as e:
+        logging.error(f"Jurnalni olishda xatolik: {str(e)}")
+        return None
+
+
+def add_jurnal(fan_id: int, bolim_id: int, nomi: str, **kwargs) -> int:
+    """Yangi jurnal qo'shish va keshni tozalash"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            INSERT INTO jurnallar (fan_id, bolim_id, nomi, rasmi, nashr_chastotasi,
+                                  murojaat_link, jurnal_sayti, talablar_link)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            fan_id, bolim_id, nomi,
+            kwargs.get('rasmi'), kwargs.get('nashr_chastotasi'),
+            kwargs.get('murojaat_link'), kwargs.get('jurnal_sayti'),
+            kwargs.get('talablar_link')
+        ))
+
+        jurnal_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        # Cache tozalash
+        SimpleCache.delete(f"jurnallar_{fan_id}_{bolim_id}")
+        SimpleCache.delete(f"count_{fan_id}_{bolim_id}")
+        SimpleCache.delete("stats")
+
+        logging.info(f"Yangi jurnal qo'shildi: {nomi} (ID: {jurnal_id})")
+        return jurnal_id
+    except Exception as e:
+        logging.error(f"Jurnal qo'shishda xatolik: {str(e)}")
+        raise
+
+
+def update_jurnal(jurnal_id: int, **kwargs) -> bool:
+    """Jurnalni yangilash va keshni tozalash"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        updates = []
+        values = []
+        allowed_fields = ['nomi', 'rasmi', 'nashr_chastotasi', 'murojaat_link', 'jurnal_sayti', 'talablar_link']
+
+        for field in allowed_fields:
+            if field in kwargs:
+                updates.append(f"{field} = ?")
+                values.append(kwargs[field])
+
+        if not updates:
+            conn.close()
+            return False
+
+        values.append(jurnal_id)
+        query = f"UPDATE jurnallar SET {', '.join(updates)} WHERE id = ?"
+        cursor.execute(query, values)
+        conn.commit()
+
+        success = cursor.rowcount > 0
+        conn.close()
+
+        if success:
+            # Cache tozalash
+            SimpleCache.delete(f"jurnal_{jurnal_id}")
+            SimpleCache.delete("jurnallar_")
+            SimpleCache.delete("count_")
+            logging.info(f"Jurnal yangilandi: ID {jurnal_id}")
+
+        return success
+    except Exception as e:
+        logging.error(f"Jurnal yangilashda xatolik: {str(e)}")
+        return False
+
+
+def delete_jurnal(jurnal_id: int) -> bool:
+    """Jurnalni o'chirish va keshni tozalash"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM jurnallar WHERE id = ?', (jurnal_id,))
+        conn.commit()
+
+        success = cursor.rowcount > 0
+        conn.close()
+
+        if success:
+            # Cache tozalash
+            SimpleCache.delete(f"jurnal_{jurnal_id}")
+            SimpleCache.delete("jurnallar_")
+            SimpleCache.delete("count_")
+            SimpleCache.delete("stats")
+            logging.info(f"Jurnal o'chirildi: ID {jurnal_id}")
+
+        return success
+    except Exception as e:
+        logging.error(f"Jurnal o'chirishda xatolik: {str(e)}")
+        return False
+
+
+def search_jurnallar(query: str, fan_id: int = None, bolim_id: int = None) -> List[Dict]:
+    """Optimizatsiya qilingan qidiruv"""
+    cache_key = f"search_{query}_{fan_id}_{bolim_id}"
+    cached = SimpleCache.get(cache_key)
+    if cached:
+        return cached
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        # LOWER funksiyasidan foydalanish (index mavjud)
+        sql = '''
+            SELECT j.id, j.nomi, j.rasmi, j.nashr_chastotasi,
+                   j.murojaat_link, j.jurnal_sayti, j.talablar_link,
+                   f.nomi, b.nomi
+            FROM jurnallar j
+            JOIN fanlar f ON j.fan_id = f.id
+            JOIN bolimlar b ON j.bolim_id = b.id
+            WHERE LOWER(j.nomi) LIKE LOWER(?)
+        '''
+
+        params = [f'%{query}%']
+
+        if fan_id:
+            sql += ' AND j.fan_id = ?'
+            params.append(fan_id)
+
+        if bolim_id:
+            sql += ' AND j.bolim_id = ?'
+            params.append(bolim_id)
+
+        sql += ' ORDER BY j.nomi LIMIT 50'  # Natijalarni cheklash
+
+        cursor.execute(sql, params)
+        results = cursor.fetchall()
+        conn.close()
+
+        jurnallar = []
+        for r in results:
+            jurnallar.append({
+                'id': r[0], 'nomi': r[1], 'rasmi': r[2], 'nashr_chastotasi': r[3],
+                'murojaat_link': r[4], 'jurnal_sayti': r[5], 'talablar_link': r[6],
+                'fan_nomi': r[7], 'bolim_nomi': r[8]
+            })
+
+        SimpleCache.set(cache_key, jurnallar)
+        return jurnallar
+    except Exception as e:
+        logging.error(f"Qidiruvda xatolik: {str(e)}")
+        return []
+
+
+def get_statistics() -> Dict:
+    """Keshlangan statistikalar"""
+    cache_key = "stats"
+    cached = SimpleCache.get(cache_key)
+    if cached:
+        return cached
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        # Parallel executing qilish uchun
+        cursor.execute('SELECT COUNT(*) FROM fanlar')
+        fanlar_count = cursor.fetchone()[0]
+
+        cursor.execute('SELECT COUNT(*) FROM bolimlar')
+        bolimlar_count = cursor.fetchone()[0]
+
+        cursor.execute('SELECT COUNT(*) FROM jurnallar')
+        jurnallar_count = cursor.fetchone()[0]
+
+        try:
+            cursor.execute('SELECT COUNT(*) FROM users')
+            users_count = cursor.fetchone()[0]
+        except sqlite3.OperationalError:
+            users_count = 0
+
+        cursor.execute('''
+            SELECT f.nomi, COUNT(*) as count
+            FROM jurnallar j
+            JOIN fanlar f ON j.fan_id = f.id
+            GROUP BY f.id, f.nomi
+            ORDER BY count DESC
+            LIMIT 1
+        ''')
+        top_fan = cursor.fetchone()
+
+        conn.close()
+
+        stats = {
+            'fanlar_count': fanlar_count,
+            'bolimlar_count': bolimlar_count,
+            'jurnallar_count': jurnallar_count,
+            'users_count': users_count,
+            'top_fan': {
+                'nomi': top_fan[0] if top_fan else "Ma'lumotsiz",
+                'jurnallar_soni': top_fan[1] if top_fan else 0
+            }
+        }
+
+        SimpleCache.set(cache_key, stats)
+        return stats
+    except Exception as e:
+        logging.error(f"Statistika olishda xatolik: {str(e)}")
+        return {
+            'fanlar_count': 0, 'bolimlar_count': 0, 'jurnallar_count': 0,
+            'users_count': 0, 'top_fan': {'nomi': "Ma'lumotsiz", 'jurnallar_soni': 0}
+        }
+
+
+# PERFORMANCE: Optimizatsiya funksiyalari
+def optimize_database():
+    """Database optimizatsiya qilish"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        # Statistikalarni yangilash
+        cursor.execute('ANALYZE')
+        # Database optimizatsiya
+        cursor.execute('VACUUM')
+
+        conn.commit()
+        conn.close()
+        logging.info("Database optimizatsiya qilindi")
+        return True
+    except Exception as e:
+        logging.error(f"Database optimizatsiyasida xatolik: {str(e)}")
+        return False
+
+
+def clear_cache():
+    """Barcha keshni tozalash"""
+    SimpleCache.clear()
+    get_fanlar.cache_clear()
+    get_bolimlar.cache_clear()
+    logging.info("Kesh tozalandi")
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    init_journals_db()
+    optimize_database()
+    stats = get_statistics()
+    print(f"\nOptimizatsiya qilingan statistika:")
+    print(f"Fanlar: {stats['fanlar_count']}")
+    print(f"Bo'limlar: {stats['bolimlar_count']}")
+    print(f"Jurnallar: {stats['jurnallar_count']}")
+    print(f"Users: {stats['users_count']}")
