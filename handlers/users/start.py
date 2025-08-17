@@ -54,8 +54,6 @@ BOLIM_EMOJI_MAP = {
 async def check_subscription(user_id):
     """Foydalanuvchining obuna holatini tekshirish"""
     subscription_status = {}
-    subscribed_count = 0
-    total_channels = len(REQUIRED_CHANNELS)
 
     for channel in REQUIRED_CHANNELS:
         try:
@@ -69,18 +67,18 @@ async def check_subscription(user_id):
 
             # Kanal uchun: member, administrator, creator - obuna deb hisoblanadi
             is_subscribed = member.status not in ['left', 'kicked']
+
             subscription_status[channel['name']] = is_subscribed
 
-            if is_subscribed:
-                subscribed_count += 1
+            if not is_subscribed:
+                return False, channel, subscription_status
 
         except Exception as e:
             logging.error(f"'{channel['name']}' obuna holatini tekshirishda xatolik: {e}")
             subscription_status[channel['name']] = False
+            return False, channel, subscription_status
 
-    # Barcha kanallarga obuna bo'lgan yoki yo'qligini aniqlash
-    all_subscribed = subscribed_count == total_channels
-    return all_subscribed, subscription_status, subscribed_count, total_channels
+    return True, None, subscription_status
 
 
 def create_subscription_keyboard():
@@ -97,16 +95,9 @@ def create_subscription_keyboard():
     return keyboard
 
 
-async def send_subscription_message(message_or_query, is_callback=False, subscription_status=None, subscribed_count=0,
-                                    total_channels=0):
+async def send_subscription_message(message_or_query, is_callback=False, subscription_status=None):
     """Obuna xabarini yuborish"""
-    if subscribed_count == 0:
-        # Hech qaysi kanalga obuna bo'lmagan
-        text = "📢 <b>Botdan foydalanish uchun pastdagi kanallarga a'zo bo'ling:</b>\n\n"
-    else:
-        # Ba'zi kanallarga obuna bo'lgan
-        remaining = total_channels - subscribed_count
-        text = f"📢 <b>Yana {remaining} ta kanalga a'zo bo'lishingiz kerak:</b>\n\n"
+    text = "📢 <b>Botdan foydalanish uchun quyidagi kanallarga a'zo bo'ling:</b>\n\n"
 
     if subscription_status:
         for channel in REQUIRED_CHANNELS:
@@ -114,52 +105,14 @@ async def send_subscription_message(message_or_query, is_callback=False, subscri
             text += f"{status} {channel['name']}\n"
         text += "\n"
 
-    if subscribed_count == 0:
-        text += "👆 Barcha kanallarga a'zo bo'ling va <b>'Obunani tekshirish'</b> tugmasini bosing."
-    else:
-        remaining = total_channels - subscribed_count
-        text += f"👆 Yana {remaining} ta kanalga a'zo bo'ling va <b>'Obunani tekshirish'</b> tugmasini bosing."
+    text += "👆 Yuqoridagi barcha kanallarga a'zo bo'ling, so'ngra <b>'Obunani tekshirish'</b> tugmasini bosing."
 
     keyboard = create_subscription_keyboard()
 
     if is_callback:
-        # Eski xabarni o'chirish va yangi xabar yuborish
-        await safe_delete_message(message_or_query.message.chat.id, message_or_query.message.message_id)
-        await message_or_query.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        await safe_edit_message(message_or_query.message, text, keyboard, ParseMode.HTML)
     else:
         await message_or_query.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-
-
-async def send_main_menu(message_or_query, full_name, is_callback=False):
-    """Asosiy menyuni yuborish"""
-    # Fanlar ro'yxatini olish
-    fanlar = get_fanlar()
-
-    # Inline keyboard yaratish
-    keyboard = InlineKeyboardMarkup(row_width=2)
-
-    for fan in fanlar:
-        btn_text = get_fan_display(fan['nomi'])
-        btn = InlineKeyboardButton(
-            text=btn_text,
-            callback_data=f"fan_{fan['id']}"
-        )
-        keyboard.insert(btn)
-
-    welcome_text = f"""🎓 <b>Assalomu alaykum, {full_name}!</b>
-
-Ilmiy jurnallar botiga xush kelibsiz!
-
-Bu bot orqali turli fanlar bo'yicha ilmiy jurnallar haqida ma'lumot olishingiz mumkin.
-
-📚 <b>Fanni tanlang:</b>"""
-
-    if is_callback:
-        # Eski xabarni o'chirish va yangi xabar yuborish
-        await safe_delete_message(message_or_query.message.chat.id, message_or_query.message.message_id)
-        await message_or_query.message.answer(welcome_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-    else:
-        await message_or_query.answer(welcome_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
 def get_fan_display(fan_nomi, max_length=18):
@@ -230,11 +183,9 @@ async def bot_start(message: types.Message):
     username = message.from_user.username
 
     # Obuna holatini tekshirish
-    is_subscribed, subscription_status, subscribed_count, total_channels = await check_subscription(user_id)
-
+    is_subscribed, failed_channel, subscription_status = await check_subscription(user_id)
     if not is_subscribed:
-        await send_subscription_message(message, subscription_status=subscription_status,
-                                        subscribed_count=subscribed_count, total_channels=total_channels)
+        await send_subscription_message(message, subscription_status=subscription_status)
         return
 
     # Foydalanuvchini bazaga qo'shish yoki yangilash
@@ -245,8 +196,29 @@ async def bot_start(message: types.Message):
     else:
         update_user_activity(user_id)
 
-    # Asosiy menyuni yuborish
-    await send_main_menu(message, full_name)
+    # Fanlar ro'yxatini olish
+    fanlar = get_fanlar()
+
+    # Inline keyboard yaratish
+    keyboard = InlineKeyboardMarkup(row_width=2)
+
+    for fan in fanlar:
+        btn_text = get_fan_display(fan['nomi'])
+        btn = InlineKeyboardButton(
+            text=btn_text,
+            callback_data=f"fan_{fan['id']}"
+        )
+        keyboard.insert(btn)
+
+    welcome_text = f"""🎓 <b>Assalomu alaykum, {full_name}!</b>
+
+Ilmiy jurnallar botiga xush kelibsiz!
+
+Bu bot orqali turli fanlar bo'yicha ilmiy jurnallar haqida ma'lumot olishingiz mumkin.
+
+📚 <b>Fanni tanlang:</b>"""
+
+    await message.answer(welcome_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
 @dp.callback_query_handler(lambda c: c.data == 'check_subscription')
@@ -255,43 +227,27 @@ async def check_subscription_callback(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
 
     user_id = callback_query.from_user.id
+    is_subscribed, failed_channel, subscription_status = await check_subscription(user_id)
+
+    if not is_subscribed:
+        # Qaysi kanallarga obuna emas ekanligini ko'rsatish
+        not_subscribed = [name for name, status in subscription_status.items() if not status]
+        await bot.answer_callback_query(
+            callback_query.id,
+            f"❌ Siz hali {', '.join(not_subscribed)} ga obuna bo'lmagansiz!",
+            show_alert=True
+        )
+        # Yangilangan holat bilan xabarni tahrirlash
+        await send_subscription_message(callback_query, is_callback=True, subscription_status=subscription_status)
+        return
+
+    # Agar obuna bo'lgan bo'lsa, asosiy menyuga o'tkazish
+    await bot.answer_callback_query(callback_query.id, "✅ Barcha obunalar tasdiqlandi!")
+
+    # Foydalanuvchini bazaga qo'shish yoki yangilash
     full_name = callback_query.from_user.full_name
     username = callback_query.from_user.username
 
-    # Obuna holatini tekshirish
-    is_subscribed, subscription_status, subscribed_count, total_channels = await check_subscription(user_id)
-
-    if not is_subscribed:
-        # Qancha kanalga obuna bo'lmaganini hisoblab chiqish
-        not_subscribed_channels = [name for name, status in subscription_status.items() if not status]
-        remaining_count = len(not_subscribed_channels)
-
-        if subscribed_count > 0:
-            # Ba'zi kanallarga obuna bo'lgan
-            await bot.answer_callback_query(
-                callback_query.id,
-                f"✅ {subscribed_count}/{total_channels} ta kanalga obuna bo'ldingiz!\n❌ Yana {remaining_count} ta kanal qoldi: {', '.join(not_subscribed_channels)}",
-                show_alert=True
-            )
-        else:
-            # Hech qaysi kanalga obuna bo'lmagan
-            await bot.answer_callback_query(
-                callback_query.id,
-                f"❌ Siz hali {', '.join(not_subscribed_channels)} ga obuna bo'lmagansiz!",
-                show_alert=True
-            )
-
-        # Yangilangan holat bilan obuna xabarini yuborish (eski xabarni o'chirib)
-        await send_subscription_message(callback_query, is_callback=True,
-                                        subscription_status=subscription_status,
-                                        subscribed_count=subscribed_count,
-                                        total_channels=total_channels)
-        return
-
-    # Agar barcha kanallarga obuna bo'lgan bo'lsa
-    await bot.answer_callback_query(callback_query.id, "🎉 Barcha obunalar tasdiqlandi! Botdan foydalanishingiz mumkin!")
-
-    # Foydalanuvchini bazaga qo'shish yoki yangilash
     user = get_user(user_id)
     if not user:
         add_user(user_id, full_name, username)
@@ -299,8 +255,29 @@ async def check_subscription_callback(callback_query: types.CallbackQuery):
     else:
         update_user_activity(user_id)
 
-    # Asosiy menyuni yuborish (eski xabarni o'chirib)
-    await send_main_menu(callback_query, full_name, is_callback=True)
+    # Fanlar ro'yxatini olish
+    fanlar = get_fanlar()
+
+    # Inline keyboard yaratish
+    keyboard = InlineKeyboardMarkup(row_width=2)
+
+    for fan in fanlar:
+        btn_text = get_fan_display(fan['nomi'])
+        btn = InlineKeyboardButton(
+            text=btn_text,
+            callback_data=f"fan_{fan['id']}"
+        )
+        keyboard.insert(btn)
+
+    welcome_text = f"""🎓 <b>Assalomu alaykum, {full_name}!</b>
+
+Ilmiy jurnallar botiga xush kelibsiz!
+
+Bu bot orqali turli fanlar bo'yicha ilmiy jurnallar haqida ma'lumot olishingiz mumkin.
+
+📚 <b>Fanni tanlang:</b>"""
+
+    await safe_edit_message(callback_query.message, welcome_text, keyboard, ParseMode.HTML)
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith('fan_'))
@@ -309,12 +286,9 @@ async def show_bolimlar(callback_query: types.CallbackQuery):
 
     # Obuna holatini tekshirish
     user_id = callback_query.from_user.id
-    is_subscribed, subscription_status, subscribed_count, total_channels = await check_subscription(user_id)
+    is_subscribed, failed_channel, subscription_status = await check_subscription(user_id)
     if not is_subscribed:
-        await send_subscription_message(callback_query, is_callback=True,
-                                        subscription_status=subscription_status,
-                                        subscribed_count=subscribed_count,
-                                        total_channels=total_channels)
+        await send_subscription_message(callback_query, is_callback=True, subscription_status=subscription_status)
         return
 
     update_user_activity(callback_query.from_user.id)
@@ -358,12 +332,9 @@ async def show_jurnallar(callback_query: types.CallbackQuery):
 
     # Obuna holatini tekshirish
     user_id = callback_query.from_user.id
-    is_subscribed, subscription_status, subscribed_count, total_channels = await check_subscription(user_id)
+    is_subscribed, failed_channel, subscription_status = await check_subscription(user_id)
     if not is_subscribed:
-        await send_subscription_message(callback_query, is_callback=True,
-                                        subscription_status=subscription_status,
-                                        subscribed_count=subscribed_count,
-                                        total_channels=total_channels)
+        await send_subscription_message(callback_query, is_callback=True, subscription_status=subscription_status)
         return
 
     update_user_activity(callback_query.from_user.id)
@@ -441,12 +412,9 @@ async def show_jurnal_detail(callback_query: types.CallbackQuery):
 
     # Obuna holatini tekshirish
     user_id = callback_query.from_user.id
-    is_subscribed, subscription_status, subscribed_count, total_channels = await check_subscription(user_id)
+    is_subscribed, failed_channel, subscription_status = await check_subscription(user_id)
     if not is_subscribed:
-        await send_subscription_message(callback_query, is_callback=True,
-                                        subscription_status=subscription_status,
-                                        subscribed_count=subscribed_count,
-                                        total_channels=total_channels)
+        await send_subscription_message(callback_query, is_callback=True, subscription_status=subscription_status)
         return
 
     update_user_activity(callback_query.from_user.id)
@@ -528,12 +496,9 @@ async def back_to_jurnallar(callback_query: types.CallbackQuery):
 
     # Obuna holatini tekshirish
     user_id = callback_query.from_user.id
-    is_subscribed, subscription_status, subscribed_count, total_channels = await check_subscription(user_id)
+    is_subscribed, failed_channel, subscription_status = await check_subscription(user_id)
     if not is_subscribed:
-        await send_subscription_message(callback_query, is_callback=True,
-                                        subscription_status=subscription_status,
-                                        subscribed_count=subscribed_count,
-                                        total_channels=total_channels)
+        await send_subscription_message(callback_query, is_callback=True, subscription_status=subscription_status)
         return
 
     update_user_activity(callback_query.from_user.id)
@@ -632,12 +597,9 @@ async def back_to_fanlar(callback_query: types.CallbackQuery):
 
     # Obuna holatini tekshirish
     user_id = callback_query.from_user.id
-    is_subscribed, subscription_status, subscribed_count, total_channels = await check_subscription(user_id)
+    is_subscribed, failed_channel, subscription_status = await check_subscription(user_id)
     if not is_subscribed:
-        await send_subscription_message(callback_query, is_callback=True,
-                                        subscription_status=subscription_status,
-                                        subscribed_count=subscribed_count,
-                                        total_channels=total_channels)
+        await send_subscription_message(callback_query, is_callback=True, subscription_status=subscription_status)
         return
 
     update_user_activity(callback_query.from_user.id)
@@ -664,17 +626,14 @@ async def back_to_fanlar(callback_query: types.CallbackQuery):
 async def current_page(callback_query: types.CallbackQuery):
     # Obuna holatini tekshirish
     user_id = callback_query.from_user.id
-    is_subscribed, subscription_status, subscribed_count, total_channels = await check_subscription(user_id)
+    is_subscribed, failed_channel, subscription_status = await check_subscription(user_id)
     if not is_subscribed:
         await bot.answer_callback_query(
             callback_query.id,
             f"❌ Avval barcha kanallarga obuna bo'ling!",
             show_alert=True
         )
-        await send_subscription_message(callback_query, is_callback=True,
-                                        subscription_status=subscription_status,
-                                        subscribed_count=subscribed_count,
-                                        total_channels=total_channels)
+        await send_subscription_message(callback_query, is_callback=True, subscription_status=subscription_status)
         return
 
     await bot.answer_callback_query(callback_query.id, "Joriy sahifa")
@@ -687,10 +646,9 @@ async def help_command(message: types.Message):
         return
 
     user_id = message.from_user.id
-    is_subscribed, subscription_status, subscribed_count, total_channels = await check_subscription(user_id)
+    is_subscribed, failed_channel, subscription_status = await check_subscription(user_id)
     if not is_subscribed:
-        await send_subscription_message(message, subscription_status=subscription_status,
-                                        subscribed_count=subscribed_count, total_channels=total_channels)
+        await send_subscription_message(message, subscription_status=subscription_status)
         return
 
     update_user_activity(message.from_user.id)
@@ -722,10 +680,9 @@ async def unknown_message(message: types.Message):
         return
 
     user_id = message.from_user.id
-    is_subscribed, subscription_status, subscribed_count, total_channels = await check_subscription(user_id)
+    is_subscribed, failed_channel, subscription_status = await check_subscription(user_id)
     if not is_subscribed:
-        await send_subscription_message(message, subscription_status=subscription_status,
-                                        subscribed_count=subscribed_count, total_channels=total_channels)
+        await send_subscription_message(message, subscription_status=subscription_status)
         return
 
     update_user_activity(message.from_user.id)
