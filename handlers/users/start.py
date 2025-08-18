@@ -11,8 +11,8 @@ import logging
 
 # Majburiy obuna sozlamalari
 REQUIRED_CHANNELS = [
-    # {"name": "Jurnal Universal", "username": "@jurnal_universal", "url": "https://t.me/jurnal_universal",
-    #  "type": "channel"},
+    {"name": "Jurnal Universal", "username": "@jurnal_universal", "url": "https://t.me/jurnal_universal",
+     "type": "channel"},
     {"name": "OAK Jurnallari", "username": "@oakjurnallariuz", "url": "https://t.me/oakjurnallariuz", "type": "group"}
 ]
 
