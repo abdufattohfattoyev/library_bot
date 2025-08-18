@@ -52,24 +52,34 @@ BOLIM_EMOJI_MAP = {
 
 async def check_subscription(user_id):
     """Foydalanuvchining obuna holatini tekshirish"""
+    unsubscribed_channels = []
+
     for channel in REQUIRED_CHANNELS:
         try:
             member = await bot.get_chat_member(chat_id=channel['username'], user_id=user_id)
 
             if member.status in ['left', 'kicked']:
-                return False, channel
+                unsubscribed_channels.append(channel)
         except Exception as e:
             logging.error(f"Obuna holatini tekshirishda xatolik {channel['name']}: {e}")
             # Agar guruhda tekshirib bo'lmasa, obuna bo'lmagan deb hisoblaymiz
-            return False, channel
+            unsubscribed_channels.append(channel)
+
+    # Agar hech bo'lmasa bitta kanalga obuna bo'lmagan bo'lsa
+    if unsubscribed_channels:
+        return False, unsubscribed_channels[0]  # Birinchi obuna bo'lmagan kanalni qaytarish
+
     return True, None
 
 
-def create_subscription_keyboard():
+def create_subscription_keyboard(channels=None):
     """Obuna tugmalarini yaratish"""
     keyboard = InlineKeyboardMarkup(row_width=1)
 
-    for channel in REQUIRED_CHANNELS:
+    # Agar alohida kanallar ro'yxati berilgan bo'lsa, faqat ularni ko'rsatish
+    channels_to_show = channels if channels else REQUIRED_CHANNELS
+
+    for channel in channels_to_show:
         keyboard.add(InlineKeyboardButton(
             text=f"🔗 {channel['name']}",
             url=channel['url']
