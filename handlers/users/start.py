@@ -102,33 +102,53 @@ async def check_subscription(user_id):
     return True, None, subscription_status
 
 
-def create_subscription_keyboard():
-    """Obuna tugmalarini yaratish"""
+def create_subscription_keyboard(subscription_status=None):
+    """Obuna tugmalarini yaratish - faqat obuna bo'lmagan kanallar uchun"""
     keyboard = InlineKeyboardMarkup(row_width=1)
 
     for channel in REQUIRED_CHANNELS:
-        keyboard.add(InlineKeyboardButton(
-            text=f"🔗 {channel['name']}",
-            url=channel['url']
-        ))
+        # Agar subscription_status berilgan bo'lsa, faqat obuna bo'lmaganlarni ko'rsatish
+        if subscription_status is None or not subscription_status.get(channel['name'], False):
+            # Obuna bo'lmagan kanallar uchun ❌ belgisi
+            status_emoji = "❌" if subscription_status else "🔗"
+            keyboard.add(InlineKeyboardButton(
+                text=f"{status_emoji} {channel['name']}",
+                url=channel['url']
+            ))
 
     keyboard.add(InlineKeyboardButton("✅ Obunani tekshirish", callback_data="check_subscription"))
     return keyboard
 
 
 async def send_subscription_message(message_or_query, is_callback=False, subscription_status=None):
-    """Obuna xabarini yuborish"""
-    text = "📢 <b>Botdan foydalanish uchun quyidagi kanallarga a'zo bo'ling:</b>\n\n"
+    """Obuna xabarini yuborish - faqat obuna bo'lmagan kanallarni ko'rsatish"""
 
+    # Obuna bo'lmagan kanallarni aniqlash
+    not_subscribed_channels = []
     if subscription_status:
         for channel in REQUIRED_CHANNELS:
-            status = "✅" if subscription_status.get(channel['name'], False) else "❌"
-            text += f"{status} {channel['name']}\n"
-        text += "\n"
+            if not subscription_status.get(channel['name'], False):
+                not_subscribed_channels.append(channel['name'])
+    else:
+        # Agar subscription_status yo'q bo'lsa, barcha kanallarni ko'rsatish
+        not_subscribed_channels = [channel['name'] for channel in REQUIRED_CHANNELS]
 
-    text += "👆 Yuqoridagi barcha kanallarga a'zo bo'ling, so'ngra <b>'Obunani tekshirish'</b> tugmasini bosing."
+    if not_subscribed_channels:
+        text = "📢 <b>Botdan foydalanish uchun quyidagi kanallarga a'zo bo'ling:</b>\n\n"
 
-    keyboard = create_subscription_keyboard()
+        # Faqat obuna bo'lmagan kanallarni ro'yxati
+        if subscription_status:
+            text += "❌ <b>Obuna bo'lmagan kanallar:</b>\n"
+            for channel in REQUIRED_CHANNELS:
+                if not subscription_status.get(channel['name'], False):
+                    text += f"   • {channel['name']}\n"
+            text += "\n"
+
+        text += "👆 Yuqoridagi barcha kanallarga a'zo bo'ling, so'ngra <b>'Obunani tekshirish'</b> tugmasini bosing."
+    else:
+        text = "✅ <b>Barcha kanallarga obuna bo'ldingiz!</b>"
+
+    keyboard = create_subscription_keyboard(subscription_status)
 
     try:
         if is_callback:
@@ -283,15 +303,24 @@ async def check_subscription_callback(callback_query: types.CallbackQuery):
     is_subscribed, failed_channel, subscription_status = await check_subscription(user_id)
 
     if not is_subscribed:
-        # Qaysi kanallarga obuna emas ekanligini ko'rsatish
+        # Qaysi kanallarga obuna emas ekanligini aniqlash
         not_subscribed = [name for name, status in subscription_status.items() if not status]
+
+        # Callback javobida faqat obuna bo'lmagan kanallarni ko'rsatish
+        if len(not_subscribed) == 1:
+            callback_text = f"❌ Siz hali '{not_subscribed[0]}' ga obuna bo'lmagansiz!"
+        else:
+            callback_text = f"❌ Siz hali {len(not_subscribed)} ta kanalga obuna bo'lmagansiz!"
+
         await bot.answer_callback_query(
             callback_query.id,
-            f"❌ Siz hali {', '.join(not_subscribed)} ga obuna bo'lmagansiz!",
+            callback_text,
             show_alert=True
         )
+
         logging.warning(f"❌ Obuna tasdiqlanmadi: {full_name} - {', '.join(not_subscribed)}")
-        # Yangilangan holat bilan xabarni tahrirlash
+
+        # Yangilangan holat bilan xabarni tahrirlash (faqat obuna bo'lmagan kanallar ko'rsatiladi)
         await send_subscription_message(callback_query, is_callback=True, subscription_status=subscription_status)
         return
 

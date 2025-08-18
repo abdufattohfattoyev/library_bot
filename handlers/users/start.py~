@@ -11,8 +11,8 @@ import logging
 
 # Majburiy obuna sozlamalari
 REQUIRED_CHANNELS = [
-    # {"name": "Jurnal Universal", "username": "@jurnal_universal", "url": "https://t.me/jurnal_universal",
-    #  "type": "channel"},
+    {"name": "Jurnal Universal", "username": "@jurnal_universal", "url": "https://t.me/jurnal_universal",
+     "type": "channel"},
     {"name": "OAK Jurnallari", "username": "@oakjurnallariuz", "url": "https://t.me/oakjurnallariuz", "type": "group"}
 ]
 
@@ -102,33 +102,53 @@ async def check_subscription(user_id):
     return True, None, subscription_status
 
 
-def create_subscription_keyboard():
-    """Obuna tugmalarini yaratish"""
+def create_subscription_keyboard(subscription_status=None):
+    """Obuna tugmalarini yaratish - faqat obuna bo'lmagan kanallar uchun"""
     keyboard = InlineKeyboardMarkup(row_width=1)
 
     for channel in REQUIRED_CHANNELS:
-        keyboard.add(InlineKeyboardButton(
-            text=f"🔗 {channel['name']}",
-            url=channel['url']
-        ))
+        # Agar subscription_status berilgan bo'lsa, faqat obuna bo'lmaganlarni ko'rsatish
+        if subscription_status is None or not subscription_status.get(channel['name'], False):
+            # Obuna bo'lmagan kanallar uchun ❌ belgisi
+            status_emoji = "❌" if subscription_status else "🔗"
+            keyboard.add(InlineKeyboardButton(
+                text=f"{status_emoji} {channel['name']}",
+                url=channel['url']
+            ))
 
     keyboard.add(InlineKeyboardButton("✅ Obunani tekshirish", callback_data="check_subscription"))
     return keyboard
 
 
 async def send_subscription_message(message_or_query, is_callback=False, subscription_status=None):
-    """Obuna xabarini yuborish"""
-    text = "📢 <b>Botdan foydalanish uchun quyidagi kanallarga a'zo bo'ling:</b>\n\n"
+    """Obuna xabarini yuborish - faqat obuna bo'lmagan kanallarni ko'rsatish"""
 
+    # Obuna bo'lmagan kanallarni aniqlash
+    not_subscribed_channels = []
     if subscription_status:
         for channel in REQUIRED_CHANNELS:
-            status = "✅" if subscription_status.get(channel['name'], False) else "❌"
-            text += f"{status} {channel['name']}\n"
-        text += "\n"
+            if not subscription_status.get(channel['name'], False):
+                not_subscribed_channels.append(channel['name'])
+    else:
+        # Agar subscription_status yo'q bo'lsa, barcha kanallarni ko'rsatish
+        not_subscribed_channels = [channel['name'] for channel in REQUIRED_CHANNELS]
 
-    text += "👆 Yuqoridagi barcha kanallarga a'zo bo'ling, so'ngra <b>'Obunani tekshirish'</b> tugmasini bosing."
+    if not_subscribed_channels:
+        text = "📢 <b>Botdan foydalanish uchun quyidagi kanallarga a'zo bo'ling:</b>\n\n"
 
-    keyboard = create_subscription_keyboard()
+        # Faqat obuna bo'lmagan kanallarni ro'yxati
+        if subscription_status:
+            text += "❌ <b>Obuna bo'lmagan kanallar:</b>\n"
+            for channel in REQUIRED_CHANNELS:
+                if not subscription_status.get(channel['name'], False):
+                    text += f"   • {channel['name']}\n"
+            text += "\n"
+
+        text += "👆 Yuqoridagi barcha kanallarga a'zo bo'ling, so'ngra <b>'Obunani tekshirish'</b> tugmasini bosing."
+    else:
+        text = "✅ <b>Barcha kanallarga obuna bo'ldingiz!</b>"
+
+    keyboard = create_subscription_keyboard(subscription_status)
 
     try:
         if is_callback:
