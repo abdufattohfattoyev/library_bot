@@ -57,19 +57,17 @@ async def check_subscription(user_id):
     for channel in REQUIRED_CHANNELS:
         try:
             member = await bot.get_chat_member(chat_id=channel['username'], user_id=user_id)
-
             if member.status in ['left', 'kicked']:
                 unsubscribed_channels.append(channel)
         except Exception as e:
             logging.error(f"Obuna holatini tekshirishda xatolik {channel['name']}: {e}")
-            # Agar guruhda tekshirib bo'lmasa, obuna bo'lmagan deb hisoblaymiz
             unsubscribed_channels.append(channel)
 
-    # Agar hech bo'lmasa bitta kanalga obuna bo'lmagan bo'lsa
     if unsubscribed_channels:
-        return False, unsubscribed_channels[0]  # Birinchi obuna bo'lmagan kanalni qaytarish
+        return False, unsubscribed_channels  # Barcha obuna bo‘lmagan kanallar
+    return True, []
 
-    return True, None
+
 
 
 def create_subscription_keyboard(channels=None):
@@ -89,16 +87,18 @@ def create_subscription_keyboard(channels=None):
     return keyboard
 
 
-async def send_subscription_message(message_or_query, is_callback=False):
+async def send_subscription_message(message_or_query, is_callback=False, channels=None):
     """Obuna xabarini yuborish"""
-    text = """Botdan foydalanish uchun pasdagi kanal va gruppaga a'zo bo'ling"""
+    text = """Botdan foydalanish uchun pastdagi kanal va guruhlarga a'zo bo'ling"""
 
-    keyboard = create_subscription_keyboard()
+    # Agar channels berilmasa, barcha REQUIRED_CHANNELS chiqadi
+    keyboard = create_subscription_keyboard(channels)
 
     if is_callback:
         await safe_edit_message(message_or_query.message, text, keyboard, ParseMode.HTML)
     else:
         await message_or_query.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+
 
 
 def get_fan_display(fan_nomi, max_length=18):
@@ -165,9 +165,9 @@ async def bot_start(message: types.Message):
     username = message.from_user.username
 
     # Obuna holatini tekshirish
-    is_subscribed, channel = await check_subscription(user_id)
+    is_subscribed, unsubscribed_channels = await check_subscription(user_id)
     if not is_subscribed:
-        await send_subscription_message(message)
+        await send_subscription_message(message, channels=unsubscribed_channels)
         return
 
     # Foydalanuvchini bazaga qo'shish yoki yangilash
@@ -183,7 +183,6 @@ async def bot_start(message: types.Message):
 
     # Inline keyboard yaratish
     keyboard = InlineKeyboardMarkup(row_width=2)
-
     for fan in fanlar:
         btn_text = get_fan_display(fan['nomi'])
         btn = InlineKeyboardButton(
@@ -209,14 +208,15 @@ async def check_subscription_callback(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
 
     user_id = callback_query.from_user.id
-    is_subscribed, channel = await check_subscription(user_id)
+    is_subscribed, unsubscribed_channels = await check_subscription(user_id)
 
     if not is_subscribed:
         await bot.answer_callback_query(
             callback_query.id,
-            f"❌ Siz hali {channel['name']} ga obuna bo'lmagansiz!",
+            f"❌ Siz hali {', '.join([ch['name'] for ch in unsubscribed_channels])} ga obuna bo'lmagansiz!",
             show_alert=True
         )
+        await send_subscription_message(callback_query, is_callback=True, channels=unsubscribed_channels)
         return
 
     # Agar obuna bo'lgan bo'lsa, asosiy menyuga o'tkazish
@@ -238,7 +238,6 @@ async def check_subscription_callback(callback_query: types.CallbackQuery):
 
     # Inline keyboard yaratish
     keyboard = InlineKeyboardMarkup(row_width=2)
-
     for fan in fanlar:
         btn_text = get_fan_display(fan['nomi'])
         btn = InlineKeyboardButton(
