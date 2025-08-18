@@ -303,15 +303,24 @@ async def check_subscription_callback(callback_query: types.CallbackQuery):
     is_subscribed, failed_channel, subscription_status = await check_subscription(user_id)
 
     if not is_subscribed:
-        # Qaysi kanallarga obuna emas ekanligini ko'rsatish
+        # Qaysi kanallarga obuna emas ekanligini aniqlash
         not_subscribed = [name for name, status in subscription_status.items() if not status]
+
+        # Callback javobida faqat obuna bo'lmagan kanallarni ko'rsatish
+        if len(not_subscribed) == 1:
+            callback_text = f"❌ Siz hali '{not_subscribed[0]}' ga obuna bo'lmagansiz!"
+        else:
+            callback_text = f"❌ Siz hali {len(not_subscribed)} ta kanalga obuna bo'lmagansiz!"
+
         await bot.answer_callback_query(
             callback_query.id,
-            f"❌ Siz hali {', '.join(not_subscribed)} ga obuna bo'lmagansiz!",
+            callback_text,
             show_alert=True
         )
+
         logging.warning(f"❌ Obuna tasdiqlanmadi: {full_name} - {', '.join(not_subscribed)}")
-        # Yangilangan holat bilan xabarni tahrirlash
+
+        # Yangilangan holat bilan xabarni tahrirlash (faqat obuna bo'lmagan kanallar ko'rsatiladi)
         await send_subscription_message(callback_query, is_callback=True, subscription_status=subscription_status)
         return
 
